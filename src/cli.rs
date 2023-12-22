@@ -6,4 +6,6 @@ use clap::Parser;
 #[structopt(version=env!("CARGO_PKG_VERSION"), about="Open or preview files.")]
 pub struct CommandLineOpts {
     pub path: Option<PathBuf>,
+    #[arg(short, long)]
+    pub extra_args: Option<String>,
 }

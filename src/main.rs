@@ -94,7 +94,7 @@ fn main() -> anyhow::Result<()> {
 
     // Do the job
     if let Some(path) = cl_opts.path {
-        handlers.handle_path(mode, &path)?;
+        handlers.handle_path(mode, &path, cl_opts.extra_args)?;
     } else {
         handlers.handle_pipe(mode)?;
     }

@@ -200,7 +200,12 @@ impl HandlerMapping {
         re.find_iter(command).count()
     }
 
-    pub fn handle_path(&self, mode: RsopMode, path: &Path) -> Result<(), HandlerError> {
+    pub fn handle_path(
+        &self,
+        mode: RsopMode,
+        path: &Path,
+        extra_args: Option<String>,
+    ) -> Result<(), HandlerError> {
         if let (RsopMode::XdgOpen, Ok(url)) = (
             &mode,
             url::Url::parse(
@@ -212,12 +217,12 @@ impl HandlerMapping {
                 let url_path = &url[url::Position::BeforeUsername..];
                 let parsed_path = PathBuf::from(url_path);
                 log::trace!("url={}, parsed_path={:?}", url, parsed_path);
-                self.dispatch_path(&parsed_path, &mode)
+                self.dispatch_path(&parsed_path, &mode, extra_args)
             } else {
-                self.dispatch_url(&url)
+                self.dispatch_url(&url, extra_args)
             }
         } else {
-            self.dispatch_path(path, &mode)
+            self.dispatch_path(path, &mode, extra_args)
         }
     }
 
@@ -246,7 +251,12 @@ impl HandlerMapping {
     }
 
     #[allow(clippy::wildcard_in_or_patterns)]
-    fn dispatch_path(&self, path: &Path, mode: &RsopMode) -> Result<(), HandlerError> {
+    fn dispatch_path(
+        &self,
+        path: &Path,
+        mode: &RsopMode,
+        extra_args: Option<String>,
+    ) -> Result<(), HandlerError> {
         // Handler candidates
         let (handlers, next_handlers) = match mode {
             RsopMode::Preview => (&self.handlers_preview, None),
@@ -270,7 +280,7 @@ impl HandlerMapping {
                         } else {
                             None
                         };
-                        return self.run_path(handler, path, mode, mime);
+                        return self.run_path(handler, path, mode, mime, extra_args);
                     }
                 }
             }
@@ -291,13 +301,13 @@ impl HandlerMapping {
 
             if let Some(mime) = mime {
                 if let Some(handler) = handlers.mimes.get(mime) {
-                    return self.run_path(handler, path, mode, Some(mime));
+                    return self.run_path(handler, path, mode, Some(mime), extra_args);
                 }
 
                 // Try sub MIME types
                 for sub_mime in Self::split_mime(mime) {
                     if let Some(handler) = handlers.mimes.get(&sub_mime) {
-                        return self.run_path(handler, path, mode, Some(&sub_mime));
+                        return self.run_path(handler, path, mode, Some(&sub_mime), extra_args);
                     }
                 }
             }
@@ -309,6 +319,7 @@ impl HandlerMapping {
             path,
             mode,
             mime,
+            extra_args,
         )
     }
 
@@ -361,10 +372,10 @@ impl HandlerMapping {
         )
     }
 
-    fn dispatch_url(&self, url: &url::Url) -> Result<(), HandlerError> {
+    fn dispatch_url(&self, url: &url::Url, extra_args: Option<String>) -> Result<(), HandlerError> {
         let scheme = url.scheme();
         if let Some(handler) = self.handlers_scheme.schemes.get(scheme) {
-            return self.run_url(handler, url);
+            return self.run_url(handler, url, extra_args);
         }
 
         Err(HandlerError::Other(anyhow::anyhow!(
@@ -453,12 +464,13 @@ impl HandlerMapping {
         path: &Path,
         mode: &RsopMode,
         mime: Option<&str>,
+        extra_args: Option<String>,
     ) -> Result<(), HandlerError> {
         let term_size = Self::term_size();
 
         match processor {
             FileProcessor::Handler(handler) => {
-                self.run_path_handler(handler, path, mime, &term_size)
+                self.run_path_handler(handler, path, mime, &term_size, extra_args)
             }
             FileProcessor::Filter(filter) => {
                 let mut filter_child = self.run_path_filter(filter, path, mime, &term_size)?;
@@ -478,7 +490,7 @@ impl HandlerMapping {
         term_size: &termsize::Size,
     ) -> Result<Child, HandlerError> {
         let cmd = Self::substitute(&filter.command, path, mime, term_size);
-        let cmd_args = Self::build_cmd(&cmd, filter.shell)?;
+        let cmd_args = Self::build_cmd(&cmd, filter.shell, None)?;
 
         let mut command = Command::new(&cmd_args[0]);
         command
@@ -498,9 +510,10 @@ impl HandlerMapping {
         path: &Path,
         mime: Option<&str>,
         term_size: &termsize::Size,
+        extra_args: Option<String>,
     ) -> Result<(), HandlerError> {
         let cmd = Self::substitute(&handler.command, path, mime, term_size);
-        let cmd_args = Self::build_cmd(&cmd, handler.shell)?;
+        let cmd_args = Self::build_cmd(&cmd, handler.shell, extra_args)?;
 
         let mut command = Command::new(&cmd_args[0]);
         command.args(&cmd_args[1..]).stdin(Stdio::null());
@@ -596,7 +609,7 @@ impl HandlerMapping {
             PathBuf::from("-")
         };
         let cmd = Self::substitute(&filter.command, &path, mime, term_size);
-        let cmd_args = Self::build_cmd(&cmd, filter.shell)?;
+        let cmd_args = Self::build_cmd(&cmd, filter.shell, None)?;
 
         // Run
         let mut command = Command::new(&cmd_args[0]);
@@ -643,7 +656,7 @@ impl HandlerMapping {
             PathBuf::from("-")
         };
         let cmd = Self::substitute(&handler.command, &path, mime, term_size);
-        let cmd_args = Self::build_cmd(&cmd, handler.shell)?;
+        let cmd_args = Self::build_cmd(&cmd, handler.shell, None)?;
 
         // Run
         let mut command = Command::new(&cmd_args[0]);
@@ -678,13 +691,18 @@ impl HandlerMapping {
         Ok(())
     }
 
-    fn run_url(&self, handler: &SchemeHandler, url: &url::Url) -> Result<(), HandlerError> {
+    fn run_url(
+        &self,
+        handler: &SchemeHandler,
+        url: &url::Url,
+        extra_args: Option<String>,
+    ) -> Result<(), HandlerError> {
         let term_size = Self::term_size();
 
         // Build command
         let path: PathBuf = PathBuf::from(url.to_owned().as_str());
         let cmd = Self::substitute(&handler.command, &path, None, &term_size);
-        let cmd_args = Self::build_cmd(&cmd, handler.shell)?;
+        let cmd_args = Self::build_cmd(&cmd, handler.shell, extra_args)?;
 
         // Run
         let mut command = Command::new(&cmd_args[0]);
@@ -784,12 +802,21 @@ impl HandlerMapping {
         Ok(tmp_file)
     }
 
-    fn build_cmd(cmd: &str, shell: bool) -> anyhow::Result<Vec<String>> {
-        let cmd = if !shell {
+    fn build_cmd(
+        cmd: &str,
+        shell: bool,
+        extra_args: Option<String>,
+    ) -> anyhow::Result<Vec<String>> {
+        let mut cmd = if !shell {
             shlex::split(cmd).ok_or_else(|| anyhow::anyhow!("Invalid command {:?}", cmd))?
         } else {
             vec!["sh".to_string(), "-c".to_string(), cmd.to_string()]
         };
+
+        if let Some(args) = extra_args {
+            cmd.push(args)
+        }
+
         log::debug!("Will run command: {:?}", cmd);
         Ok(cmd)
     }
